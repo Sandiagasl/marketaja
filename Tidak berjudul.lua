@@ -18,20 +18,25 @@ local MARKETS = {
 
 -- RARE ITEMS
 local RARE_ITEMS = {
-    ["shady seal"] = true,
+    "seal",
+    "trophy",
+    "greg",
+    "coffin",
 }
 
 local SEND_INITIAL_STOCK = true
 
 -- All names containing "crate" are rare.
 local function isRare(offer)
-    local name = string.lower(tostring(offer.Name or ""))
-    local rarity = string.lower(tostring(offer.Rarity or ""))
+    local name = string.lower(tostring(offer.Name or offer.Id or ""))
 
-    return RARE_ITEMS[name] == true
-        or string.find(name, "crate", 1, true) ~= nil
-        or string.find(name, "trophy", 1, true) -= nil
-        or offer.Rare == true
+    for _, keyword in ipairs(RARE_ITEMS) do
+        if string.find(name, string.lower(keyword), 1, true) then
+            return true
+        end
+    end
+
+    return false
 end
 
 -- HTTP REQUEST
@@ -65,7 +70,7 @@ local function sendDiscord(market, offers, initial)
         table.insert(lines, string.format(
             "**%s** %s\nSlot: `%s` | Stock: `%d` | Price: `%s`",
             offer.Name,
-            rare and "💎 **[RARE]**" or "",
+            rare and "💎 **{ Exclusive }** " or "",
             tostring(offer.Slot),
             offer.Left,
             tostring(offer.Price or "?")
