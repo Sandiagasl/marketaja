@@ -2,13 +2,19 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
 
-local MarketStock = ReplicatedStorage.Modules.Util.Net.MarketStock
+local MarketStock =
+    ReplicatedStorage.Modules.Util.Net.MarketStock
 
 -- CONFIGURATION
 local WEBHOOK_URL = "https://discord.com/api/webhooks/1484263811560116234/oS8bjLBQiqb--ivwjcRryIv_ksO7M_i57ypycnAmYwBZTJobjNttwKYvGBYER641g8ti"
 local DISCORD_USER_ID = "1021078313260826695"
-local CATEGORY = "Black"
+
 local POLL_INTERVAL = 5
+
+local MARKETS = {
+    "Black",
+    "Forest"
+}
 
 -- RARE ITEMS
 local RARE_ITEMS = {
@@ -17,20 +23,7 @@ local RARE_ITEMS = {
 
 local SEND_INITIAL_STOCK = true
 
--- HTTP REQUEST
-local requestFunc =
-    request or
-    http_request or
-    (syn and syn.request)
-
-if not requestFunc then
-    warn("HTTP request function unavailable!")
-    return
-end
-
-local previousOffers = nil
-
--- CHECK RARITY
+-- All names containing "crate" are rare.
 local function isRare(offer)
     local name = string.lower(tostring(offer.Name or ""))
     local rarity = string.lower(tostring(offer.Rarity or ""))
@@ -41,8 +34,20 @@ local function isRare(offer)
         or offer.Rare == true
 end
 
+-- HTTP REQUEST
+local requestFunc =
+    request or http_request or (syn and syn.request)
+
+if not requestFunc then
+    warn("HTTP request unavailable!")
+    return
+end
+
+-- STOCK SNAPSHOTS
+local previousStock = {}
+
 -- SEND DISCORD
-local function sendDiscord(offers, isInitial)
+local function sendDiscord(market, offers, initial)
     if #offers == 0 then
         return
     end
@@ -57,14 +62,13 @@ local function sendDiscord(offers, isInitial)
             foundRare = true
         end
 
-        local tag = rare and " **[RARE]**" or ""
-
         table.insert(lines, string.format(
-            "**%s**%s\nSlot: `%s` | Stock: `%d`",
+            "**%s** %s\nSlot: `%s` | Stock: `%d` | Price: `%s`",
             offer.Name,
-            tag,
-            tostring(offer.Slots),
-            offer.Left
+            rare and "💎 **[RARE]**" or "",
+            tostring(offer.Slot),
+            offer.Left,
+            tostring(offer.Price or "?")
         ))
     end
 
@@ -72,12 +76,13 @@ local function sendDiscord(offers, isInitial)
         username = "Market Stock Monitor",
         embeds = {
             {
-                title = isInitial and "Current Market Stock"
-                    or "Market Restock Detected",
+                title = market .. " Market",
                 description = table.concat(lines, "\n\n"),
                 color = foundRare and 16766720 or 5793266,
                 footer = {
-                    text = "Cobalt Market Monitor"
+                    text = initial
+                        and "Initial Stock"
+                        or "Stock Update"
                 },
                 timestamp = DateTime.now():ToIsoDate()
             }
@@ -87,11 +92,13 @@ local function sendDiscord(offers, isInitial)
         }
     }
 
-    -- TAG DISCORD USER WHEN RARE ITEM APPEARS
-    if foundRare and DISCORD_USER_ID ~= "" then
+    if foundRare
+        and DISCORD_USER_ID ~= "" then
 
         payload.content = "<@" .. DISCORD_USER_ID .. ">"
-        payload.allowed_mentions.users = { DISCORD_USER_ID }
+        payload.allowed_mentions.users = {
+            DISCORD_USER_ID
+        }
     end
 
     local success, result = pcall(function()
@@ -106,45 +113,44 @@ local function sendDiscord(offers, isInitial)
     end)
 
     if not success then
-        warn("Discord webhook error:", result)
+        warn("Discord error:", result)
     elseif type(result) == "table"
         and result.StatusCode
         and result.StatusCode >= 300 then
 
-        warn("Discord returned HTTP status:", result.StatusCode)
+        warn("Discord HTTP error:", result.StatusCode)
     end
 end
 
 -- UNIQUE ITEM ID
-local function makeOfferId(offer)
-    if offer.Key ~= nil then
-        return tostring(offer.Key)
-    end
-
-    return tostring(offer.Name or "Unknown")
-        .. ":" .. tostring(offer.Slots or "?")
+local function getItemId(offer)
+    return tostring(
+        offer.Key
+        or offer.Id
+        or offer.Name
+        or "Unknown"
+    ) .. ":" .. tostring(offer.Slot or offer.Slots or "?")
 end
 
--- CHECK MARKET STOCK
-local function checkStock()
+-- CHECK ONE MARKET
+local function checkMarket(market)
     local success, response = pcall(function()
-        return MarketStock:InvokeServer(CATEGORY)
+        return MarketStock:InvokeServer(market)
     end)
 
     if not success then
-        warn("Failed to retrieve market stock:", response)
+        warn("Failed to check " .. market, response)
         return
     end
 
     if type(response) ~= "table"
         or not response.Ok
         or type(response.Offers) ~= "table" then
-
-        warn("Unexpected MarketStock response")
+        warn("Invalid response:", market)
         return
     end
 
-    local currentOffers = {}
+    local current = {}
 
     for _, offer in ipairs(response.Offers) do
         local remaining = tonumber(offer.Left) or 0
@@ -152,66 +158,74 @@ local function checkStock()
         if remaining > 0 then
             local item = {
                 Name = tostring(offer.Name or "Unknown"),
-                Slots = offer.Slots or "?",
-                Key = tostring(offer.Key or ""),
+                Slot = offer.Slot or offer.Slots or "?",
+                Key = offer.Key,
+                Id = offer.Id,
                 Left = remaining,
+                Price = offer.Price,
                 Rarity = offer.Rarity,
-                Rare = offer.Rare
+                Rare = offer.Rare,
+                Kind = offer.Kind,
+                Tier = offer.Tier
             }
 
-            currentOffers[makeOfferId(item)] = item
+            current[getItemId(item)] = item
         end
     end
 
     -- FIRST CHECK
-    if previousOffers == nil then
-        previousOffers = currentOffers
+    if previousStock[market] == nil then
+        previousStock[market] = current
 
         if SEND_INITIAL_STOCK then
-            local initialList = {}
+            local list = {}
 
-            for _, item in pairs(currentOffers) do
-                table.insert(initialList, item)
+            for _, item in pairs(current) do
+                table.insert(list, item)
             end
 
-            table.sort(initialList, function(a, b)
+            table.sort(list, function(a, b)
                 return a.Name < b.Name
             end)
 
-            sendDiscord(initialList, true)
+            sendDiscord(market, list, true)
         end
 
+        print(market .. " initial stock loaded")
         return
     end
 
     local notifications = {}
 
-    -- ONLY NEW ITEMS OR INCREASED STOCK
-    for id, current in pairs(currentOffers) do
-        local previous = previousOffers[id]
+    -- NEW ITEMS OR INCREASED STOCK ONLY
+    for id, item in pairs(current) do
+        local old = previousStock[market][id]
 
-        if previous == nil or current.Left > previous.Left then
-            table.insert(notifications, current)
+        if old == nil or item.Left > old.Left then
+            table.insert(notifications, item)
         end
     end
 
     -- UPDATE SNAPSHOT
-    previousOffers = currentOffers
+    previousStock[market] = current
 
     table.sort(notifications, function(a, b)
         return a.Name < b.Name
     end)
 
     if #notifications > 0 then
-        sendDiscord(notifications, false)
-        print("New stock/restock detected!")
+        sendDiscord(market, notifications, false)
+        print(market .. " stock updated!")
     end
 end
 
 -- MAIN LOOP
 task.spawn(function()
     while true do
-        checkStock()
+        for _, market in ipairs(MARKETS) do
+            checkMarket(market)
+        end
+
         task.wait(POLL_INTERVAL)
     end
 end)
