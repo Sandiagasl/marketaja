@@ -30,7 +30,7 @@ local function isRare(offer)
 
     return RARE_ITEMS[name] == true
         or string.find(name, "crate", 1, true) ~= nil
-        or rarity == "rare"
+        or string.find(name, "trophy", 1, true) -= nil
         or offer.Rare == true
 end
 
