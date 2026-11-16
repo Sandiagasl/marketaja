@@ -12,8 +12,7 @@ local POLL_INTERVAL = 5
 
 -- RARE ITEMS
 local RARE_ITEMS = {
-    ["Shady Seal"] = true,
-    ["Crate"] = true,
+    ["shady seal"] = true,
 }
 
 local SEND_INITIAL_STOCK = true
@@ -36,7 +35,8 @@ local function isRare(offer)
     local name = string.lower(tostring(offer.Name or ""))
     local rarity = string.lower(tostring(offer.Rarity or ""))
 
-    return string.find(name, "crate", 1, true) ~= nil
+    return RARE_ITEMS[name] == true
+        or string.find(name, "crate", 1, true) ~= nil
         or rarity == "rare"
         or offer.Rare == true
 end
@@ -88,9 +88,7 @@ local function sendDiscord(offers, isInitial)
     }
 
     -- TAG DISCORD USER WHEN RARE ITEM APPEARS
-    if foundRare
-        and DISCORD_USER_ID ~= ""
-        and DISCORD_USER_ID ~= "1021078313260826695" then
+    if foundRare and DISCORD_USER_ID ~= "" then
 
         payload.content = "<@" .. DISCORD_USER_ID .. ">"
         payload.allowed_mentions.users = { DISCORD_USER_ID }
