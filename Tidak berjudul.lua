@@ -24,6 +24,7 @@ local RARE_ITEMS = {
     "coffin",
     "voucher",
     "maja",
+    "warp",
 }
 
 local SEND_INITIAL_STOCK = true
