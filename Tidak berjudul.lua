@@ -29,11 +29,14 @@ local RARE_ITEMS = {
     "seal",
     "trophy",
     "greg",
-    "coffin",
+    "coffer",
     "voucher",
     "maja",
     "warp",
-    "crate"
+    "market",
+    "crate crate",
+    "puffer",
+    "lockbox"
 }
 
 local SEND_INITIAL_STOCK = true
