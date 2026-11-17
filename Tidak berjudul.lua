@@ -2,8 +2,9 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
 
-local MarketStock =
-    ReplicatedStorage.Modules.Util.Net.MarketStock
+local Net = ReplicatedStorage.Modules.Util.Net
+local MarketStock = Net.MarketStock
+local MarketBuy = Net.MarketBuy
 
 -- CONFIGURATION
 local WEBHOOK_URL = "https://discord.com/api/webhooks/1484263811560116234/oS8bjLBQiqb--ivwjcRryIv_ksO7M_i57ypycnAmYwBZTJobjNttwKYvGBYER641g8ti"
@@ -16,6 +17,13 @@ local MARKETS = {
     "Forest"
 }
 
+-- AUTO BUY SETTINGS
+local AUTO_BUY = true
+
+-- false = hanya membeli item yang muncul setelah pengecekan pertama
+-- true = juga mencoba membeli item langka yang sudah tersedia saat script mulai
+local AUTO_BUY_INITIAL_STOCK = false
+
 -- RARE ITEMS
 local RARE_ITEMS = {
     "seal",
@@ -25,22 +33,10 @@ local RARE_ITEMS = {
     "voucher",
     "maja",
     "warp",
+    "crate"
 }
 
 local SEND_INITIAL_STOCK = true
-
--- All names containing "crate" are rare.
-local function isRare(offer)
-    local name = string.lower(tostring(offer.Name or offer.Id or ""))
-
-    for _, keyword in ipairs(RARE_ITEMS) do
-        if string.find(name, string.lower(keyword), 1, true) then
-            return true
-        end
-    end
-
-    return false
-end
 
 -- HTTP REQUEST
 local requestFunc =
@@ -51,10 +47,57 @@ if not requestFunc then
     return
 end
 
+-- CHECK RARITY USING KEYWORDS
+local function isRare(offer)
+    local name = string.lower(
+        tostring(offer.Name or offer.Id or "")
+    )
+
+    for _, keyword in ipairs(RARE_ITEMS) do
+        if string.find(name, string.lower(keyword), 1, true) then
+            return true
+        end
+    end
+
+    return false
+end
+
 -- STOCK SNAPSHOTS
 local previousStock = {}
 
--- SEND DISCORD
+-- PURCHASE HISTORY
+local boughtItems = {}
+
+-- DISCORD REQUEST
+local function sendDiscordPayload(payload)
+    local success, result = pcall(function()
+        return requestFunc({
+            Url = WEBHOOK_URL,
+            Method = "POST",
+            Headers = {
+                ["Content-Type"] = "application/json"
+            },
+            Body = HttpService:JSONEncode(payload)
+        })
+    end)
+
+    if not success then
+        warn("Discord error:", result)
+        return false
+    end
+
+    if type(result) == "table"
+        and result.StatusCode
+        and result.StatusCode >= 300 then
+
+        warn("Discord HTTP error:", result.StatusCode)
+        return false
+    end
+
+    return true
+end
+
+-- STOCK NOTIFICATION
 local function sendDiscord(market, offers, initial)
     if #offers == 0 then
         return
@@ -73,7 +116,7 @@ local function sendDiscord(market, offers, initial)
         table.insert(lines, string.format(
             "**%s** %s\nSlot: `%s` | Stock: `%d` | Price: `%s`",
             offer.Name,
-            rare and "💎 **{ Exclusive }** " or "",
+            rare and "💎 **{ Exclusive }**" or "",
             tostring(offer.Slot),
             offer.Left,
             tostring(offer.Price or "?")
@@ -88,9 +131,7 @@ local function sendDiscord(market, offers, initial)
                 description = table.concat(lines, "\n\n"),
                 color = foundRare and 16766720 or 5793266,
                 footer = {
-                    text = initial
-                        and "Initial Stock"
-                        or "Stock Update"
+                    text = initial and "Initial Stock" or "Stock Update"
                 },
                 timestamp = DateTime.now():ToIsoDate()
             }
@@ -100,34 +141,43 @@ local function sendDiscord(market, offers, initial)
         }
     }
 
-    if foundRare
-        and DISCORD_USER_ID ~= "" then
-
+    if foundRare and DISCORD_USER_ID ~= "" then
         payload.content = "<@" .. DISCORD_USER_ID .. ">"
         payload.allowed_mentions.users = {
             DISCORD_USER_ID
         }
     end
 
-    local success, result = pcall(function()
-        return requestFunc({
-            Url = WEBHOOK_URL,
-            Method = "POST",
-            Headers = {
-                ["Content-Type"] = "application/json"
-            },
-            Body = HttpService:JSONEncode(payload)
-        })
-    end)
+    sendDiscordPayload(payload)
+end
 
-    if not success then
-        warn("Discord error:", result)
-    elseif type(result) == "table"
-        and result.StatusCode
-        and result.StatusCode >= 300 then
+-- PURCHASE NOTIFICATION
+local function sendBuyNotification(market, offer)
+    local payload = {
+        username = "Market Auto Buyer",
+        embeds = {
+            {
+                title = "🛒 Purchase Request Sent",
+                description = string.format(
+                    "**Item:** %s\n**Market:** %s\n**Slot:** %s\n**Price:** %s",
+                    tostring(offer.Name),
+                    tostring(market),
+                    tostring(offer.Slot),
+                    tostring(offer.Price or "?")
+                ),
+                color = 5793266,
+                footer = {
+                    text = "Market Auto Buy"
+                },
+                timestamp = DateTime.now():ToIsoDate()
+            }
+        },
+        allowed_mentions = {
+            parse = {}
+        }
+    }
 
-        warn("Discord HTTP error:", result.StatusCode)
-    end
+    sendDiscordPayload(payload)
 end
 
 -- UNIQUE ITEM ID
@@ -137,7 +187,50 @@ local function getItemId(offer)
         or offer.Id
         or offer.Name
         or "Unknown"
-    ) .. ":" .. tostring(offer.Slot or offer.Slots or "?")
+    ) .. ":" .. tostring(offer.Slot or "?")
+end
+
+-- AUTO BUY
+local function autoBuy(market, offer)
+    if not AUTO_BUY then
+        return
+    end
+
+    if not isRare(offer) then
+        return
+    end
+
+    local slot = tonumber(offer.Slot)
+
+    if not slot then
+        warn("Invalid slot for:", offer.Name)
+        return
+    end
+
+    local buyId = market .. ":" .. getItemId(offer)
+
+    if boughtItems[buyId] then
+        return
+    end
+
+    -- Mark before invoking to prevent duplicate attempts
+    boughtItems[buyId] = true
+
+    local success, result = pcall(function()
+        return MarketBuy:InvokeServer(market, slot)
+    end)
+
+    if not success then
+        boughtItems[buyId] = nil
+        warn("Auto Buy error:", result)
+        return
+    end
+
+    -- InvokeServer may return nil.
+    -- This confirms only that the request did not error.
+    sendBuyNotification(market, offer)
+
+    print("Purchase request sent:", market, offer.Name, "Slot:", slot)
 end
 
 -- CHECK ONE MARKET
@@ -154,6 +247,7 @@ local function checkMarket(market)
     if type(response) ~= "table"
         or not response.Ok
         or type(response.Offers) ~= "table" then
+
         warn("Invalid response:", market)
         return
     end
@@ -166,7 +260,7 @@ local function checkMarket(market)
         if remaining > 0 then
             local item = {
                 Name = tostring(offer.Name or "Unknown"),
-                Slot = offer.Slot or offer.Slots or "?",
+                Slot = offer.Slot or "?",
                 Key = offer.Key,
                 Id = offer.Id,
                 Left = remaining,
@@ -185,17 +279,21 @@ local function checkMarket(market)
     if previousStock[market] == nil then
         previousStock[market] = current
 
-        if SEND_INITIAL_STOCK then
-            local list = {}
+        local list = {}
 
-            for _, item in pairs(current) do
-                table.insert(list, item)
+        for _, item in pairs(current) do
+            table.insert(list, item)
+
+            if AUTO_BUY_INITIAL_STOCK then
+                autoBuy(market, item)
             end
+        end
 
-            table.sort(list, function(a, b)
-                return a.Name < b.Name
-            end)
+        table.sort(list, function(a, b)
+            return a.Name < b.Name
+        end)
 
+        if SEND_INITIAL_STOCK then
             sendDiscord(market, list, true)
         end
 
@@ -205,12 +303,15 @@ local function checkMarket(market)
 
     local notifications = {}
 
-    -- NEW ITEMS OR INCREASED STOCK ONLY
+    -- NEW ITEMS OR INCREASED STOCK
     for id, item in pairs(current) do
         local old = previousStock[market][id]
 
         if old == nil or item.Left > old.Left then
             table.insert(notifications, item)
+
+            -- AUTO BUY MATCHING ITEMS
+            autoBuy(market, item)
         end
     end
 
