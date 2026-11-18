@@ -107,7 +107,7 @@ local function sendDiscord(allMarkets, initial)
                     "%s **%s** %s\nStock: `%s` | Price: `%s`",
                     rare and "💎" or "•",
                     tostring(offer.Name or "Unknown"),
-                    rare and "**[RARE]**" or "",
+                    rare and "**{ Exclsuive }**" or "",
                     tostring(offer.Left or "?"),
                     tostring(offer.Price or "?")
                 ))
