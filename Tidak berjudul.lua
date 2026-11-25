@@ -28,7 +28,7 @@ local MarketStock =
 local WEBHOOK_URL = "https://discord.com/api/webhooks/1484263811560116234/oS8bjLBQiqb--ivwjcRryIv_ksO7M_i57ypycnAmYwBZTJobjNttwKYvGBYER641g8ti"
 local DISCORD_USER_ID = "1021078313260826695"
 
-local POLL_INTERVAL = 5
+local POLL_INTERVAL = 10
 
 local MARKETS = {
     "Black",
